@@ -1,6 +1,6 @@
 # HestiaCP → Bunny DNS Sync
 
-Automatically synchronize DNS zones and records from [HestiaCP](https://hestiacp.com) to [Bunny.net DNS](https://bunny.net/dns/) in real time.
+Automatically synchronize DNS zones and records from [HestiaCP](https://hestiacp.com) to [Bunny.net DNS](https://bunny.net?ref=rkvns7hoyl) in real time.
 
 When a DNS record is added, modified, or deleted in HestiaCP, this plugin detects the change via `inotifywait` and immediately syncs the zone to Bunny.net — no manual intervention required.
 
@@ -221,7 +221,7 @@ rm -rf /usr/local/hestia/plugins/bunny-dns
 >
 > Use at your own risk. Always keep backups of your DNS configuration before performing bulk sync operations. The authors accept no responsibility for DNS outages, data loss, or misconfiguration resulting from the use of this software.
 >
-> Bunny.net API usage is subject to [Bunny.net Terms of Service](https://bunny.net/terms/).
+> Bunny.net API usage is subject to [Bunny.net Terms of Service](https://bunny.net?ref=rkvns7hoyl).
 
 ---
 
