@@ -1,0 +1,25 @@
+# HestiaCP → Bunny DNS Plugin
+# /usr/local/hestia/plugins/bunny-dns/config.conf
+# Permissions: chmod 600 config.conf
+
+# Bunny.net API Key (required)
+# Get it at: dash.bunny.net → Account → API Keys
+BUNNY_API_KEY=""
+
+# Default TTL for DNS records (seconds)
+DEFAULT_TTL=3600
+
+# Custom nameservers (optional)
+# If both are set, applied to every zone synced on Bunny.
+# Leave empty to use Bunny defaults: kiki.bunny.net / coco.bunny.net
+BUNNY_NS1=""
+BUNNY_NS2=""
+# Example:
+# BUNNY_NS1="ns1.yourdomain.com"
+# BUNNY_NS2="ns2.yourdomain.com"
+
+# SOA contact email (optional)
+# Leave empty to use Bunny default (hostmaster@bunny.net)
+BUNNY_SOA_EMAIL=""
+# Example:
+# BUNNY_SOA_EMAIL="dns@yourdomain.com"
