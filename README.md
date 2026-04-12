@@ -15,7 +15,7 @@ When a DNS record is added, modified, or deleted in HestiaCP, this plugin detect
 - **Automatic zone creation** — zones are created on Bunny when a new domain is added in HestiaCP
 - **Automatic zone deletion** — zones are removed from Bunny when a domain is deleted in HestiaCP
 - **Lock-based debounce** — prevents duplicate syncs when HestiaCP writes a file multiple times in quick succession
-- **Compatible** — Ubuntu 20/22/24, Debian 11/12, Rocky Linux / AlmaLinux 8/9
+- **Compatible** — Ubuntu 20/22/24, Debian 11/12
 
 ---
 
