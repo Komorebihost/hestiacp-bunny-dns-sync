@@ -78,11 +78,11 @@ else
 fi
 
 # ── Cron reconciliation ───────────────────────────────────────────────────────
-# Runs sync_all every hour as a safety net for any events missed by inotifywait.
+# Runs sync_all every night at 3:00 AM as a safety net for any events missed by inotifywait.
 # Also rebuilds the users.json cache needed by delete_user.
 if ! crontab -l 2>/dev/null | grep -qF "$CRON_MARKER"; then
     ( crontab -l 2>/dev/null
-      echo "0 * * * * $PLUGIN_DIR/bunny-dns.sh sync_all >> $PLUGIN_DIR/bunny-dns.log 2>&1 $CRON_MARKER"
+      echo "0 3 * * * $PLUGIN_DIR/bunny-dns.sh sync_all >> $PLUGIN_DIR/bunny-dns.log 2>&1 $CRON_MARKER"
     ) | crontab -
     echo "→ Cron reconciliation added (runs every hour)"
 else
