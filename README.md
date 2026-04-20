@@ -1,123 +1,263 @@
-# HestiaCP Fail2Ban — Jails & Filters for Hestia, WordPress & Roundcube
+# HestiaCP → Bunny DNS Sync
 
-Hardened Fail2Ban configuration for servers running [HestiaCP](https://hestiacp.com).  
-Protects the control panel, Roundcube webmail, Nginx virtual hosts and WordPress installations with ready-to-use jails and filters.
+Automatically synchronize DNS zones and records from [HestiaCP](https://hestiacp.com) to [Bunny.net DNS](https://bunny.net?ref=rkvns7hoyl) in real time.
+
+When a DNS record is added, modified, or deleted in HestiaCP, this plugin detects the change and immediately syncs the zone to Bunny.net — no manual intervention required.
 
 ---
 
 ## Features
 
-- **Hestia panel jail** — monitors Nginx errors on ports `8083`/`8087`
-- **Roundcube webmail jail** — blocks brute-force login attempts on webmail
-- **Nginx domains jail** — watches all virtual host error logs for suspicious activity
-- **WordPress jail** — detects and bans probes for common malicious PHP shells (`xmlrpc.php`, `wp-is.php`, `shell.php`, etc.)
-- **IP whitelist** — global `ignoreip` via `jail.local` to prevent locking yourself out
-- **Manual ban/unban** — quick reference commands included
-- **iptables hardening** — persistent blocking of known-bad IP ranges via `iptables-persistent`
+- **Real-time sync** — file watcher detects HestiaCP DNS changes instantly
+- **Hook-based sync** — HestiaCP hooks trigger sync directly on domain add/delete, bypassing the inotifywait race condition that affects new users
+- **Hourly reconciliation** — cron job runs `sync_all` every hour as a safety net for any missed events
+- **Full record support** — A, AAAA, CNAME, MX, TXT, NS, SRV, CAA, PTR, RDR
+- **Subdomain support** — subdomains managed by separate HestiaCP users are synced as prefixed records inside the parent zone (e.g. `shop.example.com` → records `shop`, `www.shop` inside the `example.com` zone)
+- **Custom nameservers** — optionally apply your own NS1/NS2 and SOA email to every synced zone on Bunny
+- **Automatic zone creation** — zones are created on Bunny when a new domain is added in HestiaCP
+- **Automatic zone deletion** — zones are removed from Bunny when a domain is deleted in HestiaCP
+- **Lock-based debounce** — prevents duplicate syncs when HestiaCP writes a file multiple times in quick succession
+- **Compatible** — Ubuntu 20/22/24, Debian 11/12
 
 ---
 
 ## Requirements
 
 - HestiaCP installed and running
-- Fail2Ban ≥ 0.10
-- Nginx as web server
-- Roundcube (if using webmail jail)
-- `iptables-persistent` (installed automatically by `install.sh`)
+- Bunny.net account with DNS enabled
+- Bunny.net API Key with **Read & Write** permissions
+- `jq`, `curl`, `inotify-tools` (installed automatically by `install.sh`)
 
 ---
 
 ## Installation
 
 ```bash
-git clone https://github.com/Komorebihost/hestiacp-failtoban.git
-cd hestiacp-failtoban
-chmod +x install.sh
-sudo ./install.sh
-```
+# 1. Clone the repository
+git clone https://github.com/Komorebihost/hestiacp-bunny-dns-sync
+cd hestiacp-bunny-dns-sync
 
-The script will:
-1. Install jails for Hestia panel, Roundcube and Nginx domains
-2. Install the WordPress filter and jail
-3. Restart Fail2Ban and verify all jails are active
+# 2. Copy files to plugin directory
+mkdir -p /usr/local/hestia/plugins/bunny-dns
+cp -r bunny-dns.sh bunny-dns-watcher.sh bunny-dns.service config.conf.example install.sh hooks \
+   /usr/local/hestia/plugins/bunny-dns/
 
----
+# 3. Run installer
+bash /usr/local/hestia/plugins/bunny-dns/install.sh
 
-## Files
+# 4. Configure your API key
+nano /usr/local/hestia/plugins/bunny-dns/config.conf
 
-| File | Description |
-|------|-------------|
-| `install.sh` | Automated installer |
-| `jail.d/hestia-base.conf` | Jails for Hestia panel, Roundcube and Nginx domains |
-| `jail.d/hestia-wordpress.conf` | Jail for WordPress shell probes |
-| `filter.d/nginx-wordpress.conf` | Filter rules for WordPress attacks |
-
----
-
-## Manual Usage
-
-### Check jail status
-```bash
-fail2ban-client status nginx-wordpress
-fail2ban-client status nginx-hestia-panel
-fail2ban-client status roundcube-auth
-```
-
-### Ban an IP manually
-```bash
-fail2ban-client set nginx-hestia-panel banip 1.2.3.4
-```
-
-### Unban an IP
-```bash
-fail2ban-client set nginx-hestia-panel unbanip 1.2.3.4
-```
-
-### Add an IP to the global whitelist
-Edit `/etc/fail2ban/jail.local` and add your IP to `ignoreip`:
-```ini
-[DEFAULT]
-ignoreip = 127.0.0.1/8 ::1 YOUR.IP.HERE
-```
-Then restart: `systemctl restart fail2ban`
-
-Or set it at runtime (temporary, resets on restart):
-```bash
-fail2ban-client set nginx-hestia-panel addignoreip YOUR.IP.HERE
-```
-
-### Block IPs permanently with iptables
-```bash
-iptables -A INPUT -s 1.2.3.4 -j DROP
-netfilter-persistent save
+# 5. Initial sync of all existing zones
+/usr/local/hestia/plugins/bunny-dns/bunny-dns.sh sync_all
 ```
 
 ---
 
-## Quick Health Check
+## Configuration
+
+Edit `/usr/local/hestia/plugins/bunny-dns/config.conf`:
 
 ```bash
-systemctl status hestia fail2ban --no-pager | grep -E "Active|Memory"
-fail2ban-client status nginx-hestia-panel | grep "Banned IP"
+# Bunny.net API Key (required)
+BUNNY_API_KEY="your_api_key_here"
+
+# Default TTL for DNS records in seconds
+DEFAULT_TTL=3600
+
+# Custom nameservers (optional)
+# If both are set, applied to every zone synced on Bunny.
+# Leave empty to use Bunny defaults: kiki.bunny.net / coco.bunny.net
+BUNNY_NS1=""
+BUNNY_NS2=""
+
+# SOA contact email (optional)
+BUNNY_SOA_EMAIL=""
 ```
+
+Get your API key at: **dash.bunny.net → Account → API Keys**
+
+---
+
+## How It Works
+
+```
+HestiaCP DNS change
+       │
+       ├─── inotifywait (file watcher)
+       │         Detects .conf writes on existing domains
+       │         Acquires lock → sleep 2s → bunny-dns.sh sync
+       │
+       └─── HestiaCP hooks  ← fixes new-user race condition
+                 v-add-domain / v-add-dns-domain
+                 sleep 3s → bunny-dns.sh sync
+                 v-delete-domain / v-delete-dns-domain
+                 bunny-dns.sh delete
+
+Hourly cron: bunny-dns.sh sync_all  ← safety net for any missed event
+```
+
+### Why two sync paths?
+
+`inotifywait --recursive` watches the directory tree as it exists when the service starts. When HestiaCP creates a **new user**, it creates the full directory tree and writes the DNS conf file in a few milliseconds — faster than inotifywait can add a watch to the new directory. The `CLOSE_WRITE` event is lost, and the domain never appears on Bunny.
+
+The HestiaCP hooks fix this: they are called directly by HestiaCP after each command succeeds, regardless of the filesystem watcher state. A 3-second sleep inside each hook gives HestiaCP time to finish writing all conf files before the sync runs.
+
+### Subdomain logic
+
+If HestiaCP has both `example.com` (user A) and `shop.example.com` (user B):
+
+- `example.com` gets its own Bunny zone
+- Records from `shop.example.com` are synced as `shop`, `www.shop`, `mail.shop`, etc. **inside the `example.com` zone** — no separate zone is created for the subdomain
+
+When `shop.example.com` is modified, only its prefixed records are updated. Records belonging to `example.com` are never touched.
+
+### Custom nameservers
+
+If `BUNNY_NS1` and `BUNNY_NS2` are set, the plugin applies them to every zone after each sync via the Bunny API (`POST /dnszone/{id}`). This lets you white-label your DNS with your own nameserver hostnames (e.g. `ns1.yourdomain.com`).
+
+You will also need to create glue records at your domain registrar pointing `ns1` and `ns2` to Bunny's IP addresses:
+
+| Nameserver | IPv4            | IPv6                  |
+|------------|----------------|-----------------------|
+| NS1        | `91.200.176.1`  | `2400:52e0:fff0::1`  |
+| NS2        | `109.104.147.1` | `2400:52e0:fff2::1`  |
+
+---
+
+## Manual Commands
+
+```bash
+ENGINE=/usr/local/hestia/plugins/bunny-dns/bunny-dns.sh
+
+# Sync a specific domain
+$ENGINE sync example.com
+
+# Sync all domains for a specific user
+$ENGINE sync_all username
+
+# Sync all domains on the server
+$ENGINE sync_all
+
+# Delete a zone from Bunny
+$ENGINE delete example.com
+
+# Debug: show HestiaCP records and current Bunny state
+$ENGINE debug example.com
+```
+
+---
+
+## Service Management
+
+```bash
+# Check watcher status
+systemctl status bunny-dns
+
+# View live log
+tail -f /usr/local/hestia/plugins/bunny-dns/bunny-dns.log
+
+# Restart watcher
+systemctl restart bunny-dns
+```
+
+---
+
+## File Structure
+
+```
+/usr/local/hestia/plugins/bunny-dns/
+├── bunny-dns.sh              # Main sync engine
+├── bunny-dns-watcher.sh      # inotifywait file watcher
+├── bunny-dns.service         # systemd unit
+├── config.conf               # Your configuration (not in repo)
+├── config.conf.example       # Configuration template
+├── install.sh                # Installer
+├── bunny-dns.log             # Runtime log
+├── hooks/                    # HestiaCP hook scripts (installed to /usr/local/hestia/data/hooks/)
+│   ├── v-add-domain          #   → sync on domain creation
+│   ├── v-delete-domain       #   → delete on domain removal
+│   ├── v-add-dns-domain      #   → sync on DNS-only zone creation
+│   └── v-delete-dns-domain   #   → delete on DNS-only zone removal
+└── mapping/
+    ├── zones.json              # Zone ID cache  {"domain": zone_id}
+    └── records_DOMAIN.json     # Record ID cache per zone
+```
+
+> If a hook file already exists in `/usr/local/hestia/data/hooks/` (from another plugin), `install.sh` appends the Bunny DNS logic instead of overwriting it.
+
+---
+
+## Update
+
+```bash
+# 1. Download the latest version
+git clone https://github.com/Komorebihost/hestiacp-bunny-dns-sync /tmp/bunny-dns-update
+
+# 2. Copy scripts — config.conf is never overwritten
+cp /tmp/bunny-dns-update/bunny-dns.sh          /usr/local/hestia/plugins/bunny-dns/
+cp /tmp/bunny-dns-update/bunny-dns-watcher.sh  /usr/local/hestia/plugins/bunny-dns/
+cp /tmp/bunny-dns-update/bunny-dns.service     /usr/local/hestia/plugins/bunny-dns/
+cp /tmp/bunny-dns-update/install.sh            /usr/local/hestia/plugins/bunny-dns/
+cp -r /tmp/bunny-dns-update/hooks              /usr/local/hestia/plugins/bunny-dns/
+
+# 3. Re-run the installer (idempotent — skips anything already in place)
+bash /usr/local/hestia/plugins/bunny-dns/install.sh
+
+# 4. Cleanup
+rm -rf /tmp/bunny-dns-update
+```
+
+> `config.conf`, `mapping/`, and any pre-existing hooks from other plugins are **never modified** during an update.
+
+### Updating from v2.0.0 to v2.1.0
+
+v2.0.0 is missing hooks and the cron job. Run the update procedure above — `install.sh` adds them automatically and skips anything already present.
+
+---
+
+## Uninstall
+
+```bash
+# Stop and remove the service
+systemctl stop bunny-dns
+systemctl disable bunny-dns
+rm -f /etc/systemd/system/bunny-dns.service
+systemctl daemon-reload
+
+# Remove hooks (only if no other plugin shares them)
+for hook in v-add-domain v-delete-domain v-add-dns-domain v-delete-dns-domain; do
+    rm -f /usr/local/hestia/data/hooks/$hook
+done
+
+# Remove cron job
+crontab -l 2>/dev/null | grep -v "bunny-dns-reconcile" | crontab -
+
+# Remove plugin directory
+rm -rf /usr/local/hestia/plugins/bunny-dns
+```
+
+> If `install.sh` had appended to a shared hook file (instead of creating it), remove only the `# --- bunny-dns ---` block manually rather than deleting the whole file.
 
 ---
 
 ## Disclaimer
 
-> This project is an independent, community-developed tool. It is **not affiliated with, endorsed by, or supported by** HestiaCP.
+> This plugin is an independent, community-developed tool by [Komorebihost](https://komorebihost.com). It is **not affiliated with, endorsed by, or supported by** Bunny.net or HestiaCP.
 >
-> Use at your own risk. Always back up your existing Fail2Ban configuration before running the installer. The authors accept no responsibility for data loss, service disruptions, or misconfiguration resulting from the use of this software.
+> Use at your own risk. Always keep backups of your DNS configuration before performing bulk sync operations. The authors accept no responsibility for DNS outages, data loss, or misconfiguration resulting from the use of this software.
+>
+> Bunny.net API usage is subject to [Bunny.net Terms of Service](https://bunny.net?ref=rkvns7hoyl).
 
 ---
 
 ## License
 
-MIT License — © 2025 [Komorebihost](https://komorebihost.com)
+MIT License — © 2024 [Komorebihost](https://komorebihost.com)
 
 Permission is hereby granted, free of charge, to any person obtaining a copy of this software to use, copy, modify, merge, publish, distribute, sublicense, and/or sell copies of the software, subject to the following conditions:
 
-The above copyright notice and this permission notice shall be included in all copies or substantial portions of the software.
+The above copyright notice and this permission notice shall be included in all copies or substantial portions of the Software.
 
 **THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND.**
 
@@ -126,4 +266,5 @@ The above copyright notice and this permission notice shall be included in all c
 ## Contributing
 
 Issues and pull requests are welcome.  
-Repository: [github.com/Komorebihost/hestiacp-failtoban](https://github.com/Komorebihost/hestiacp-failtoban)
+Repository: [github.com/Komorebihost/hestiacp-bunny-dns-sync](https://github.com/Komorebihost/hestiacp-bunny-dns-sync)  
+Website: [komorebihost.com](https://komorebihost.com)
