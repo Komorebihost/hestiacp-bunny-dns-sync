@@ -10,9 +10,11 @@ When a DNS record is added, modified, or deleted in HestiaCP, this plugin detect
 
 - **Real-time sync** — file watcher detects HestiaCP DNS changes instantly
 - **Hook-based sync** — HestiaCP hooks trigger sync directly on domain add/delete, bypassing the inotifywait race condition that affects new users
+- **User deletion support** — deleting a HestiaCP user automatically removes all their Bunny zones via the `v-delete-user` hook
 - **Hourly reconciliation** — cron job runs `sync_all` every hour as a safety net for any missed events
 - **Full record support** — A, AAAA, CNAME, MX, TXT, NS, SRV, CAA, PTR, RDR
 - **Subdomain support** — subdomains managed by separate HestiaCP users are synced as prefixed records inside the parent zone (e.g. `shop.example.com` → records `shop`, `www.shop` inside the `example.com` zone)
+- **Zone-owner priority** — if `domain.xx` already defines a record named `shop`, that record is never overridden when `shop.domain.xx` is synced; the zone owner always wins
 - **Custom nameservers** — optionally apply your own NS1/NS2 and SOA email to every synced zone on Bunny
 - **Automatic zone creation** — zones are created on Bunny when a new domain is added in HestiaCP
 - **Automatic zone deletion** — zones are removed from Bunny when a domain is deleted in HestiaCP
@@ -48,7 +50,7 @@ bash /usr/local/hestia/plugins/bunny-dns/install.sh
 # 4. Configure your API key
 nano /usr/local/hestia/plugins/bunny-dns/config.conf
 
-# 5. Initial sync of all existing zones
+# 5. Initial sync of all existing zones (also builds the user→domain cache)
 /usr/local/hestia/plugins/bunny-dns/bunny-dns.sh sync_all
 ```
 
@@ -88,13 +90,15 @@ HestiaCP DNS change
        │         Detects .conf writes on existing domains
        │         Acquires lock → sleep 2s → bunny-dns.sh sync
        │
-       └─── HestiaCP hooks  ← fixes new-user race condition
+       └─── HestiaCP hooks
                  v-add-domain / v-add-dns-domain
-                 sleep 3s → bunny-dns.sh sync
+                   sleep 3s → bunny-dns.sh sync         ← fixes new-user race condition
                  v-delete-domain / v-delete-dns-domain
-                 bunny-dns.sh delete
+                   bunny-dns.sh delete
+                 v-delete-user
+                   bunny-dns.sh delete_user              ← removes all user's zones
 
-Hourly cron: bunny-dns.sh sync_all  ← safety net for any missed event
+Hourly cron: bunny-dns.sh sync_all  ← safety net + rebuilds user cache
 ```
 
 ### Why two sync paths?
@@ -103,14 +107,22 @@ Hourly cron: bunny-dns.sh sync_all  ← safety net for any missed event
 
 The HestiaCP hooks fix this: they are called directly by HestiaCP after each command succeeds, regardless of the filesystem watcher state. A 3-second sleep inside each hook gives HestiaCP time to finish writing all conf files before the sync runs.
 
-### Subdomain logic
+### User deletion
+
+When a HestiaCP user is deleted, HestiaCP removes their domains internally without triggering per-domain hooks. The `v-delete-user` hook handles the full cleanup by calling `bunny-dns.sh delete_user USERNAME`, which reads the user's domain list from the local cache (`mapping/users.json`) and removes each zone from Bunny.
+
+The cache is populated automatically on every sync. If you upgraded from v2.1.0, run `sync_all` once to build it before deleting any users.
+
+### Subdomain logic and zone-owner priority
 
 If HestiaCP has both `example.com` (user A) and `shop.example.com` (user B):
 
 - `example.com` gets its own Bunny zone
 - Records from `shop.example.com` are synced as `shop`, `www.shop`, `mail.shop`, etc. **inside the `example.com` zone** — no separate zone is created for the subdomain
 
-When `shop.example.com` is modified, only its prefixed records are updated. Records belonging to `example.com` are never touched.
+**Zone-owner priority:** if user A has already defined a record named `shop` in `example.com`, that record is never overridden when user B's `shop.example.com` is synced. The zone owner's records always win. This applies regardless of record type (A, CNAME, etc.).
+
+When `shop.example.com` is modified, only its own prefixed records are updated. Records belonging to `example.com` are never touched.
 
 ### Custom nameservers
 
@@ -142,7 +154,10 @@ $ENGINE sync_all
 # Delete a zone from Bunny
 $ENGINE delete example.com
 
-# Debug: show HestiaCP records and current Bunny state
+# Delete all Bunny zones for a user (normally called automatically by v-delete-user hook)
+$ENGINE delete_user username
+
+# Debug: show HestiaCP records, current Bunny state and cache info
 $ENGINE debug example.com
 ```
 
@@ -178,10 +193,12 @@ systemctl restart bunny-dns
 │   ├── v-add-domain          #   → sync on domain creation
 │   ├── v-delete-domain       #   → delete on domain removal
 │   ├── v-add-dns-domain      #   → sync on DNS-only zone creation
-│   └── v-delete-dns-domain   #   → delete on DNS-only zone removal
+│   ├── v-delete-dns-domain   #   → delete on DNS-only zone removal
+│   └── v-delete-user         #   → delete all zones when a user is removed
 └── mapping/
-    ├── zones.json              # Zone ID cache  {"domain": zone_id}
-    └── records_DOMAIN.json     # Record ID cache per zone
+    ├── zones.json              # Zone ID cache          {"domain": zone_id}
+    ├── records_DOMAIN.json     # Record ID cache per zone
+    └── users.json              # User → domains cache   {"user": ["domain1", "domain2"]}
 ```
 
 > If a hook file already exists in `/usr/local/hestia/data/hooks/` (from another plugin), `install.sh` appends the Bunny DNS logic instead of overwriting it.
@@ -210,9 +227,19 @@ rm -rf /tmp/bunny-dns-update
 
 > `config.conf`, `mapping/`, and any pre-existing hooks from other plugins are **never modified** during an update.
 
-### Updating from v2.0.0 to v2.1.0
+### Updating from v2.1.0 to v2.2.0
 
-v2.0.0 is missing hooks and the cron job. Run the update procedure above — `install.sh` adds them automatically and skips anything already present.
+v2.1.0 is missing `v-delete-user` and the user→domain cache. Run the update procedure above, then:
+
+```bash
+# Rebuild cache and populate users.json
+/usr/local/hestia/plugins/bunny-dns/bunny-dns.sh sync_all
+```
+
+### Updating from v2.0.0 to v2.2.0
+
+Run the update procedure above — `install.sh` installs all hooks and the cron job automatically.  
+Then run `sync_all` once to build the user→domain cache.
 
 ---
 
@@ -226,7 +253,7 @@ rm -f /etc/systemd/system/bunny-dns.service
 systemctl daemon-reload
 
 # Remove hooks (only if no other plugin shares them)
-for hook in v-add-domain v-delete-domain v-add-dns-domain v-delete-dns-domain; do
+for hook in v-add-domain v-delete-domain v-add-dns-domain v-delete-dns-domain v-delete-user; do
     rm -f /usr/local/hestia/data/hooks/$hook
 done
 

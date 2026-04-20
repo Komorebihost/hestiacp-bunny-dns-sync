@@ -1,0 +1,27 @@
+#!/bin/bash
+# =============================================================================
+# HestiaCP → Bunny DNS  –  Hook: v-delete-user
+# /usr/local/hestia/data/hooks/v-delete-user
+# https://komorebihost.com
+#
+# Called by HestiaCP after a user is successfully deleted.
+# Args: USER
+#
+# Removes all Bunny DNS zones that belonged to this user. HestiaCP's internal
+# domain deletions do not trigger per-domain hooks, so this hook handles the
+# full cleanup in one pass.
+#
+# Relies on mapping/users.json, populated automatically on every sync.
+# Run 'bunny-dns.sh sync_all' once after installing this hook (or after
+# upgrading from v2.1.0) to ensure the cache is current.
+# =============================================================================
+
+USER="$1"
+
+[ -z "$USER" ] && exit 0
+
+ENGINE="/usr/local/hestia/plugins/bunny-dns/bunny-dns.sh"
+[ -x "$ENGINE" ] || exit 0
+
+"$ENGINE" delete_user "$USER" &
+exit 0

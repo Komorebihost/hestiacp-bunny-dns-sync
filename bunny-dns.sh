@@ -1,6 +1,6 @@
 #!/bin/bash
 # =============================================================================
-# HestiaCP → Bunny DNS  –  Engine  v2.1.0
+# HestiaCP → Bunny DNS  –  Engine  v2.2.0
 # /usr/local/hestia/plugins/bunny-dns/bunny-dns.sh
 # https://komorebihost.com
 #
@@ -15,6 +15,7 @@
 # Cache files:
 #   mapping/zones.json              {"domain.tld": zone_id}
 #   mapping/records_DOMAIN.json     {"hestia_domain:line_id": bunny_record_id}
+#   mapping/users.json              {"username": ["domain1.tld", "domain2.tld"]}
 # =============================================================================
 
 PLUGIN_DIR="/usr/local/hestia/plugins/bunny-dns"
@@ -124,6 +125,43 @@ rec_cache_purge() {
     [ -f "$cache" ] || return 0
     jq --arg p "${2}:" 'with_entries(select(.key|startswith($p)|not))' "$cache" \
         > "${cache}.tmp" && mv "${cache}.tmp" "$cache"
+}
+
+# ── User → domains cache ──────────────────────────────────────────────────────
+# mapping/users.json: {"username": ["domain1.tld", "domain2.tld"]}
+# Populated automatically on every sync. Used by delete_user to know which
+# zones to remove from Bunny when the HestiaCP user is already gone.
+user_cache_add() {
+    local user="$1" domain="$2"
+    local cache="$MAPPING_DIR/users.json"
+    [ -f "$cache" ] || echo '{}' > "$cache"
+    jq --arg u "$user" --arg d "$domain" \
+       'if .[$u] then .[$u] |= (. + [$d] | unique) else .[$u] = [$d] end' \
+       "$cache" > "${cache}.tmp" && mv "${cache}.tmp" "$cache"
+}
+
+user_cache_del_domain() {
+    local user="$1" domain="$2"
+    local cache="$MAPPING_DIR/users.json"
+    [ -f "$cache" ] || return 0
+    jq --arg u "$user" --arg d "$domain" \
+       'if .[$u] then .[$u] -= [$d] else . end' \
+       "$cache" > "${cache}.tmp" && mv "${cache}.tmp" "$cache"
+}
+
+user_cache_del_user() {
+    local user="$1"
+    local cache="$MAPPING_DIR/users.json"
+    [ -f "$cache" ] || return 0
+    jq --arg u "$user" 'del(.[$u])' "$cache" \
+       > "${cache}.tmp" && mv "${cache}.tmp" "$cache"
+}
+
+user_cache_get_domains() {
+    local user="$1"
+    local cache="$MAPPING_DIR/users.json"
+    [ -f "$cache" ] || return 0
+    jq -r --arg u "$user" '.[$u] // [] | .[]' "$cache" 2>/dev/null
 }
 
 # ── Parse a single HestiaCP DNS conf line ────────────────────────────────────
@@ -238,6 +276,27 @@ zone_apply_settings() {
         || log_info  "  NS/SOA applied (zone $zone_id)"
 }
 
+# ── Collect record names owned by the zone root user ─────────────────────────
+# Returns a newline-separated list of resolved record names from zone_domain's
+# own conf. Used to enforce zone-owner priority: when sub.domain.xx is synced
+# into the domain.xx zone, any record name already defined by domain.xx is
+# skipped — the zone owner always wins.
+_zone_owner_names() {
+    local zone_domain="$1"
+    local zone_user; zone_user=$(find_user "$zone_domain") || return 0
+    local zone_conf="$HESTIA_USER_DIR/$zone_user/dns/$zone_domain.conf"
+    [ -f "$zone_conf" ] || return 0
+    local zline zp_record zp_type zname
+    while IFS= read -r zline; do
+        [ -z "$zline" ] && continue
+        zp_record=$(echo "$zline" | sed -n "s/.*RECORD='\([^']*\)'.*/\1/p")
+        zp_type=$(  echo "$zline" | sed -n "s/.*TYPE='\([^']*\)'.*/\1/p")
+        [ -z "$zp_type" ] || [ "$zp_type" = "SOA" ] && continue
+        zname=$(build_name "$zp_record" "$zone_domain" "$zone_domain")
+        echo "$zname"
+    done < "$zone_conf"
+}
+
 # ── Sync all records of a hestia_domain into its Bunny zone ──────────────────
 # Strategy: delete all existing records owned by this hestia_domain, then
 # push fresh ones from the conf file. Simple and reliable.
@@ -250,7 +309,19 @@ sync_domain() {
     local conf="$HESTIA_USER_DIR/$user/dns/$hestia_domain.conf"
     [ -f "$conf" ] || { log_warn "Conf not found: $conf"; return 0; }
 
+    # Track which domains belong to this user (needed for delete_user)
+    user_cache_add "$user" "$hestia_domain"
+
     log_info "sync_domain: $hestia_domain → zone $zone_domain (id=$zone_id)"
+
+    # When syncing a subdomain into a parent zone, collect the record names
+    # already defined by the zone owner. Zone-owner records take priority:
+    # if domain.xx defines record "shop", it will not be overridden when
+    # shop.domain.xx is synced — the subdomain's apex record is skipped.
+    local priority_names=""
+    if [ "$hestia_domain" != "$zone_domain" ]; then
+        priority_names=$(_zone_owner_names "$zone_domain")
+    fi
 
     # 1. Delete existing Bunny records owned by this hestia_domain
     local old_id
@@ -291,6 +362,13 @@ sync_domain() {
         fi
 
         local name; name=$(build_name "$p_record" "$hestia_domain" "$zone_domain")
+
+        # Zone-owner priority: skip if the zone owner already defines this name
+        if [ -n "$priority_names" ] && echo "$priority_names" | grep -qxF "$name"; then
+            log_info "  skip #$line_id $name $p_type (shadowed by zone owner $zone_domain)"
+            ((skipped++)); ((line_id++)); continue
+        fi
+
         local body; body=$(build_record_body \
             "$type_int" "$name" "$p_value" "${p_ttl:-$DEFAULT_TTL}" "$p_priority" "$p_type")
 
@@ -373,6 +451,9 @@ action_delete() {
     local hestia_domain="$1" user_hint="${2:-}"
     log_info "=== delete: $hestia_domain ==="
 
+    # Update user cache (user_hint is always set when called from hooks)
+    [ -n "$user_hint" ] && user_cache_del_domain "$user_hint" "$hestia_domain"
+
     # Subdomain: remove only its records from parent zone
     local parent="${hestia_domain#*.}"
     if [[ "$hestia_domain" == *.*.* ]]; then
@@ -399,6 +480,34 @@ action_delete() {
     log_info "Zone DELETED: $hestia_domain (id=$zone_id)"
     zone_cache_del "$hestia_domain"
     rm -f "$(rec_cache_file "$hestia_domain")"
+}
+
+# ── action_delete_user ────────────────────────────────────────────────────────
+# Deletes all Bunny zones/records that belonged to a HestiaCP user.
+# Called by the v-delete-user hook after HestiaCP has already removed the user
+# (conf files are gone). Relies on mapping/users.json, which is populated
+# automatically on every sync. Run sync_all once after upgrading from v2.1.0
+# to ensure the cache is current before deleting any users.
+action_delete_user() {
+    local user="$1"
+    log_info "=== delete_user: $user ==="
+
+    local domains; domains=$(user_cache_get_domains "$user")
+    if [ -z "$domains" ]; then
+        log_warn "delete_user: no cached domains for '$user'"
+        log_warn "  Tip: run '$0 sync_all' once to populate the cache, then retry"
+        return 0
+    fi
+
+    local domain
+    while IFS= read -r domain; do
+        [ -z "$domain" ] && continue
+        log_info "delete_user: removing $domain"
+        action_delete "$domain" "$user"
+    done <<< "$domains"
+
+    user_cache_del_user "$user"
+    log_info "delete_user: done ($user)"
 }
 
 # ── action_sync_all ───────────────────────────────────────────────────────────
@@ -469,13 +578,22 @@ action_debug() {
     echo "Record cache:"
     local rcf; rcf=$(rec_cache_file "$domain")
     [ -f "$rcf" ] && jq '.' "$rcf" || echo "(empty)"
+
+    echo ""
+    echo "User cache (owner of $domain):"
+    local ucf="$MAPPING_DIR/users.json"
+    [ -f "$ucf" ] \
+        && jq -r --arg d "$domain" 'to_entries[] | select(.value[] == $d) | .key' "$ucf" 2>/dev/null \
+        || echo "(empty)"
 }
 
 # ── MAIN ──────────────────────────────────────────────────────────────────────
 case "${1:-}" in
-    sync)     action_sync     "${2:?'Usage: $0 sync DOMAIN [USER]'}" "${3:-}" ;;
-    delete)   action_delete   "${2:?'Usage: $0 delete DOMAIN [USER]'}" "${3:-}" ;;
-    sync_all) action_sync_all "${2:-}" ;;
-    debug)    action_debug    "${2:?'Usage: $0 debug DOMAIN'}" ;;
-    *) echo "Usage: $0 {sync DOMAIN [USER]|delete DOMAIN [USER]|sync_all [USER]|debug DOMAIN}"; exit 1 ;;
+    sync)        action_sync        "${2:?'Usage: $0 sync DOMAIN [USER]'}" "${3:-}" ;;
+    delete)      action_delete      "${2:?'Usage: $0 delete DOMAIN [USER]'}" "${3:-}" ;;
+    delete_user) action_delete_user "${2:?'Usage: $0 delete_user USER'}" ;;
+    sync_all)    action_sync_all    "${2:-}" ;;
+    debug)       action_debug       "${2:?'Usage: $0 debug DOMAIN'}" ;;
+    *) echo "Usage: $0 {sync DOMAIN [USER]|delete DOMAIN [USER]|delete_user USER|sync_all [USER]|debug DOMAIN}"
+       exit 1 ;;
 esac
