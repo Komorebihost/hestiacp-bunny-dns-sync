@@ -1,0 +1,22 @@
+#!/bin/bash
+# =============================================================================
+# HestiaCP → Bunny DNS  –  Hook: v-add-dns-domain
+# /usr/local/hestia/data/hooks/v-add-dns-domain
+# https://komorebihost.com
+#
+# Called by HestiaCP after a DNS-only zone is added.
+# Args: USER DOMAIN IP [RESTART]
+# =============================================================================
+
+USER="$1"
+DOMAIN="$2"
+
+[ -z "$USER" ] || [ -z "$DOMAIN" ] && exit 0
+
+ENGINE="/usr/local/hestia/plugins/bunny-dns/bunny-dns.sh"
+[ -x "$ENGINE" ] || exit 0
+
+sleep 3
+
+"$ENGINE" sync "$DOMAIN" "$USER" &
+exit 0

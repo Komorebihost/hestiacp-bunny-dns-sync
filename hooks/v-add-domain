@@ -1,0 +1,27 @@
+#!/bin/bash
+# =============================================================================
+# HestiaCP → Bunny DNS  –  Hook: v-add-domain
+# /usr/local/hestia/data/hooks/v-add-domain
+# https://komorebihost.com
+#
+# Called by HestiaCP after a domain is successfully added.
+# Args: USER DOMAIN [MAIL] [ALIASES] [PROXY] [SSL] ...
+#
+# Fixes the inotifywait race condition: when a new HestiaCP user is created,
+# inotifywait may not have time to add a watch to the new directory before
+# the DNS conf file is written. This hook calls sync directly.
+# =============================================================================
+
+USER="$1"
+DOMAIN="$2"
+
+[ -z "$USER" ] || [ -z "$DOMAIN" ] && exit 0
+
+ENGINE="/usr/local/hestia/plugins/bunny-dns/bunny-dns.sh"
+[ -x "$ENGINE" ] || exit 0
+
+# Wait for HestiaCP to finish writing all DNS conf files
+sleep 3
+
+"$ENGINE" sync "$DOMAIN" "$USER" &
+exit 0

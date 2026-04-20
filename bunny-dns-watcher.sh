@@ -1,7 +1,8 @@
 #!/bin/bash
 # =============================================================================
-# HestiaCP → Bunny DNS  –  File Watcher  v2.0.0
+# HestiaCP → Bunny DNS  –  File Watcher  v2.1.0
 # /usr/local/hestia/plugins/bunny-dns/bunny-dns-watcher.sh
+# https://komorebihost.com
 # =============================================================================
 
 PLUGIN_DIR="/usr/local/hestia/plugins/bunny-dns"

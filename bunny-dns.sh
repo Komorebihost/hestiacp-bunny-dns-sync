@@ -1,9 +1,10 @@
 #!/bin/bash
 # =============================================================================
-# HestiaCP → Bunny DNS  –  Engine  v2.0.0
+# HestiaCP → Bunny DNS  –  Engine  v2.1.0
 # /usr/local/hestia/plugins/bunny-dns/bunny-dns.sh
+# https://komorebihost.com
 #
-# Compatible: Ubuntu 20/22/24, Debian 11/12, Rocky/AlmaLinux 8/9
+# Compatible: Ubuntu 20/22/24, Debian 11/12
 #
 # Bunny API notes:
 #   Auth:    AccessKey header
