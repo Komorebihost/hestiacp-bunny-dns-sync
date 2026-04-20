@@ -9,7 +9,6 @@ PLUGIN_DIR="/usr/local/hestia/plugins/bunny-dns"
 SERVICE_FILE="/etc/systemd/system/bunny-dns.service"
 HOOKS_SRC="$PLUGIN_DIR/hooks"
 HOOKS_DST="/usr/local/hestia/data/hooks"
-CRON_MARKER="# bunny-dns-reconcile"
 
 # ── Dependencies ──────────────────────────────────────────────────────────────
 for pkg in jq curl inotify-tools; do
@@ -77,17 +76,6 @@ else
     echo "   Copy hooks/ from the repository and re-run install.sh to enable hook support."
 fi
 
-# ── Cron reconciliation ───────────────────────────────────────────────────────
-# Runs sync_all every night at 3:00 AM as a safety net for any events missed by inotifywait.
-# Also rebuilds the users.json cache needed by delete_user.
-if ! crontab -l 2>/dev/null | grep -qF "$CRON_MARKER"; then
-    ( crontab -l 2>/dev/null
-      echo "0 3 * * * $PLUGIN_DIR/bunny-dns.sh sync_all >> $PLUGIN_DIR/bunny-dns.log 2>&1 $CRON_MARKER"
-    ) | crontab -
-    echo "→ Cron reconciliation added (runs every hour)"
-else
-    echo "→ Cron reconciliation already present, skipping"
-fi
 
 # ── Done ──────────────────────────────────────────────────────────────────────
 echo ""

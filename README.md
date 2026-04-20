@@ -11,7 +11,6 @@ When a DNS record is added, modified, or deleted in HestiaCP, this plugin detect
 - **Real-time sync** — file watcher detects HestiaCP DNS changes instantly
 - **Hook-based sync** — HestiaCP hooks trigger sync directly on domain add/delete, bypassing the inotifywait race condition that affects new users
 - **User deletion support** — deleting a HestiaCP user automatically removes all their Bunny zones via the `v-delete-user` hook
-- **Hourly reconciliation** — cron job runs `sync_all` every hour as a safety net for any missed events
 - **Full record support** — A, AAAA, CNAME, MX, TXT, NS, SRV, CAA, PTR, RDR
 - **Subdomain support** — subdomains managed by separate HestiaCP users are synced as prefixed records inside the parent zone (e.g. `shop.example.com` → records `shop`, `www.shop` inside the `example.com` zone)
 - **Zone-owner priority** — if `domain.xx` already defines a record named `shop`, that record is never overridden when `shop.domain.xx` is synced; the zone owner always wins
@@ -98,7 +97,6 @@ HestiaCP DNS change
                  v-delete-user
                    bunny-dns.sh delete_user              ← removes all user's zones
 
-Hourly cron: bunny-dns.sh sync_all  ← safety net + rebuilds user cache
 ```
 
 ### Why two sync paths?
@@ -238,7 +236,7 @@ v2.1.0 is missing `v-delete-user` and the user→domain cache. Run the update pr
 
 ### Updating from v2.0.0 to v2.2.0
 
-Run the update procedure above — `install.sh` installs all hooks and the cron job automatically.  
+Run the update procedure above — `install.sh` installs all hooks automatically.  
 Then run `sync_all` once to build the user→domain cache.
 
 ---
@@ -257,8 +255,6 @@ for hook in v-add-domain v-delete-domain v-add-dns-domain v-delete-dns-domain v-
     rm -f /usr/local/hestia/data/hooks/$hook
 done
 
-# Remove cron job
-crontab -l 2>/dev/null | grep -v "bunny-dns-reconcile" | crontab -
 
 # Remove plugin directory
 rm -rf /usr/local/hestia/plugins/bunny-dns
