@@ -1,20 +1,18 @@
 #!/bin/bash
 # =============================================================================
-# HestiaCP → Bunny DNS  –  Hook: v-delete-domain
-# /usr/local/hestia/data/hooks/v-delete-domain
-# https://komorebihost.com
+# HestiaCP hook: v-delete-domain
+# Fired by HestiaCP after a full domain (web+dns) is deleted.
 #
-# Called by HestiaCP after a domain is successfully deleted.
-# Args: USER DOMAIN
+# Args: USER DOMAIN [RESTART]
 # =============================================================================
-
 USER="$1"
 DOMAIN="$2"
 
 [ -z "$USER" ] || [ -z "$DOMAIN" ] && exit 0
 
-ENGINE="/usr/local/hestia/plugins/bunny-dns/bunny-dns.sh"
-[ -x "$ENGINE" ] || exit 0
+PLUGIN=/usr/local/hestia/plugins/bunny-dns/bunny-dns.sh
+[ -x "$PLUGIN" ] || exit 0
 
-"$ENGINE" delete "$DOMAIN" "$USER" &
+"$PLUGIN" delete "$DOMAIN" "$USER"
+
 exit 0

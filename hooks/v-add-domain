@@ -1,27 +1,27 @@
 #!/bin/bash
 # =============================================================================
-# HestiaCP → Bunny DNS  –  Hook: v-add-domain
-# /usr/local/hestia/data/hooks/v-add-domain
-# https://komorebihost.com
+# HestiaCP hook: v-add-domain
+# Fired by HestiaCP after a full domain (web+mail+dns) is added.
+# Handles the case where DNS is enabled as part of v-add-domain.
 #
-# Called by HestiaCP after a domain is successfully added.
-# Args: USER DOMAIN [MAIL] [ALIASES] [PROXY] [SSL] ...
-#
-# Fixes the inotifywait race condition: when a new HestiaCP user is created,
-# inotifywait may not have time to add a watch to the new directory before
-# the DNS conf file is written. This hook calls sync directly.
+# Args: USER DOMAIN [IP] [ALIASES] [PROXY_EXT] [HSTS] [FORCE] [DNS] [MAIL] ...
 # =============================================================================
-
 USER="$1"
 DOMAIN="$2"
+DNS_FLAG="${8:-}"
 
 [ -z "$USER" ] || [ -z "$DOMAIN" ] && exit 0
 
-ENGINE="/usr/local/hestia/plugins/bunny-dns/bunny-dns.sh"
-[ -x "$ENGINE" ] || exit 0
+# Skip if DNS was explicitly disabled for this domain
+[ "$DNS_FLAG" = "no" ] && exit 0
 
-# Wait for HestiaCP to finish writing all DNS conf files
+PLUGIN=/usr/local/hestia/plugins/bunny-dns/bunny-dns.sh
+[ -x "$PLUGIN" ] || exit 0
+
+# v-add-domain may call v-add-dns-domain internally (which triggers its own
+# hook). We still run here as a safety net for custom HestiaCP builds that
+# skip the DNS sub-command.
 sleep 3
+"$PLUGIN" sync "$DOMAIN" "$USER"
 
-"$ENGINE" sync "$DOMAIN" "$USER" &
 exit 0
